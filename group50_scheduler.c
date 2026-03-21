@@ -28,7 +28,7 @@
  */
 
 /* ----------------------------
- * Global "hardware resources"
+ * Global “hardware resources”
  * ---------------------------- */
 int printers  = 2;
 int scanners  = 1;
@@ -51,8 +51,8 @@ queue_t user_queue[3];  /* user queues: index 0 for priority 1, index 1 for prio
  * Free block list for First-Fit memory management
  * ----------------------------
  * User-process memory spans [64, 1023] (960 MB total).
- * Free blocks are kept in strictly ascending order of starting address.
- * No two adjacent free blocks may coexist without being merged.
+ * Free blocks are kept in ascending order of starting address.
+ * No two adjacent free blocks coexist without being merged.
  */
 typedef struct free_block free_block_t;
 
@@ -62,7 +62,7 @@ typedef struct free_block {
     struct free_block *next; /* next free block in ascending start order */
 } free_block_t;
 
-free_block_t *freelist; /* head of free-block list */
+free_block_t *freelist; /* head pointer of free-block list */
 
 #define MAX_PROCESSES 128
 
@@ -107,23 +107,33 @@ typedef struct process {
  * You MUST provide implementations with the same signatures.
  */
 
-void memory_init(void);
-void admit_process(void);
-process_t *dispatch(process_t **cur_running_rt);
-void run_process(process_t *p);
-void post_run(process_t *p, process_t **cur_running_rt);
-int  termination_check(int processNo, int process_count, process_t *cur_running_rt);
+void memory_initialize(void);                       /* Initialize your memory manager state. */
+void admit_process(void);                     /* Admit user jobs from sub_queue to user queues when possible. */
+process_t *dispatch(process_t **cur_running_rt); /* Select the process to run this tick. */
+void run_process(process_t *p);               /* Run the selected process for exactly 1 tick. */
+void post_run(process_t *p, process_t **cur_running_rt); /* Handle completion / re-queue after 1 tick. */
+int termination_check(int processNo, int process_count, process_t *cur_running_rt); /* Return 1 if simulation ends. */
 
 /* =========================================================
  * OPTIONAL HELPER FUNCTIONS
- * ========================================================= */
-int  memory_can_allocate(int req_size);
-int  memory_allocate(process_t *p);
-int  memory_free(process_t *p);
-int  resource_available(process_t *p);
-void resource_occupy(process_t *p);
-void resource_free(process_t *p);
-void arrival(process_t *p);
+ * =========================================================
+ * You may implement these helpers, change their behavior, or ignore them entirely.
+ * They exist only to suggest a clean decomposition; you can inline logic elsewhere.
+ * (Especially for memory: any correct approach is allowed.)
+ */
+
+/* ---- Memory helpers  ---- */
+int memory_can_allocate(int req_size);        /* check if req_size can be allocated now. */
+int allocate_memory(process_t *p);            /* allocate memory for a user process and set p->mem_start. */
+int memory_free(process_t *p);                /* free a user process memory block. */
+
+/* ---- Resource helpers  ---- */
+int resource_available(process_t *p);         /* check if resources are available. */
+void resource_occupy(process_t *p);           /* reserve resources for an admitted user process. */
+void resource_free(process_t *p);             /* release resources when a process terminates. */
+
+/* ---- Arrival helper  ---- */
+void arrival(process_t *p);                   /* enqueue a newly arrived process. */
 
 
 /* =========================================================
@@ -154,18 +164,22 @@ void print_log(process_t *ready_process, int time) {
 
 
 /* =========================================================
+ * REQUIRED FUNCTION STUBS (STUDENTS MUST COMPLETE)
+ * ========================================================= */
+
+/* =========================================================
  * MEMORY MANAGEMENT IMPLEMENTATION
  * =========================================================
  * Implements First-Fit allocation over the user memory region [64, 1023].
  * The freelist is maintained in ascending order of starting address.
- * Adjacent free blocks are always merged (coalescing) on release.
+ * Adjacent free blocks are always merged on release.
  */
 
 /*
- * memory_init - called once at startup.
+ * memory_initialize - called once at startup.
  * Creates a single free block covering all 960 MB of user memory [64, 1023].
  */
-void memory_init(void) {
+void memory_initialize(void) {
     freelist = (free_block_t *)malloc(sizeof(free_block_t));
     freelist->start = 64;   /* user memory starts right after RT region */
     freelist->size  = 960;  /* 1023 - 64 + 1 = 960 MB */
@@ -185,23 +199,23 @@ int memory_can_allocate(int req_size) {
 }
 
 /*
- * memory_allocate - allocates req_size MB for process p using First Fit.
+ * allocate_memory - allocates req_size MB for process p using First Fit.
  * Sets p->mem_start to the starting address of the allocated block.
- * Splits the selected block: allocation comes from the low-address end.
+ * Splits the selected block, allocation comes from the low-address end.
  * Returns 0 on success, -1 if no suitable block is found.
  */
-int memory_allocate(process_t *p) {
+int allocate_memory(process_t *p) {
     free_block_t *blk  = freelist;
     free_block_t *prev = NULL;
 
-    /* Scan from lowest address, find first block large enough */
+    // Scan from lowest address, find the first block large enough 
     while (blk != NULL) {
         if (blk->size >= p->mem_req) {
-            /* Allocate from low-address end of this block */
+            // Allocate from low-address end
             p->mem_start = blk->start;
 
             if (blk->size == p->mem_req) {
-                /* Exact fit: remove block entirely */
+                // if exact fit: remove block entirely 
                 if (prev == NULL) {
                     freelist = blk->next;
                 } else {
@@ -209,7 +223,7 @@ int memory_allocate(process_t *p) {
                 }
                 free(blk);
             } else {
-                /* Partial fit: shrink block from the low-address side */
+                // Partial fit: shrink block from the low-address side
                 blk->start += p->mem_req;
                 blk->size  -= p->mem_req;
             }
@@ -218,23 +232,24 @@ int memory_allocate(process_t *p) {
         prev = blk;
         blk  = blk->next;
     }
-    return -1; /* no suitable block */
+    return -1; //-1, no suitable block
 }
 
 /*
  * memory_free - releases the memory block held by process p.
  * Inserts a new free block into the list in ascending address order,
- * then coalesces with any adjacent neighbours.
+ * then joins with any adjacent neighbours.
  * The RT region [0, 63] is never touched.
  */
 int memory_free(process_t *p) {
-    /* Build the block to release */
+
+    // build block to free
     free_block_t *newblk = (free_block_t *)malloc(sizeof(free_block_t));
     newblk->start = p->mem_start;
     newblk->size  = p->mem_req;
     newblk->next  = NULL;
 
-    /* Insert in ascending order */
+    // insert with ascending order
     free_block_t *blk  = freelist;
     free_block_t *prev = NULL;
 
@@ -243,7 +258,7 @@ int memory_free(process_t *p) {
         blk  = blk->next;
     }
 
-    /* Link: prev -> newblk -> blk */
+    // Link: prev -> newblk -> blk
     newblk->next = blk;
     if (prev == NULL) {
         freelist = newblk;
@@ -251,7 +266,7 @@ int memory_free(process_t *p) {
         prev->next = newblk;
     }
 
-    /* Coalesce with next block if adjacent */
+    // join with next block if adjacent
     if (newblk->next != NULL &&
         (newblk->start + newblk->size) == newblk->next->start) {
         free_block_t *nxt = newblk->next;
@@ -260,7 +275,7 @@ int memory_free(process_t *p) {
         free(nxt);
     }
 
-    /* Coalesce with previous block if adjacent */
+    // join with previous block if adjacent
     if (prev != NULL &&
         (prev->start + prev->size) == newblk->start) {
         prev->size += newblk->size;
@@ -276,7 +291,7 @@ int memory_free(process_t *p) {
  * RESOURCE MANAGEMENT
  * =========================================================
  * Global resource counters (printers, scanners, modems, cd_drives) are
- * decremented on admission and restored on termination.
+ * decremented on admission and restored on end.
  */
 
 /*
@@ -321,11 +336,11 @@ void resource_free(process_t *p) {
 void arrival(process_t *p) {
     p->state = SUBMITTED;
     if (p->init_prio == 0) {
-        /* Real-time: bypass submission queue, straight to RT queue */
+        // Real-time: bypass submission queue, straight to RT queue
         p->mem_start = 0;   /* RT processes always use [0, 63] */
         queue_push(&rt_queue, p);
     } else {
-        /* User: enter submission queue in arrival (file) order */
+        // User: enter submission queue in arrival order
         queue_push(&sub_queue, p);
     }
 }
@@ -335,25 +350,25 @@ void arrival(process_t *p) {
  * ADMIT
  * =========================================================
  * Scans the submission queue in FIFO order and admits each head process
- * if (and only if) both memory AND all I/O resources are simultaneously
- * available.  Stops as soon as the head process cannot be admitted.
+ * if both memory AND all I/O resources are simultaneously available.
+ * Stops as soon as the head process cannot be admitted.
  */
 void admit_process(void) {
     while (!queue_empty(&sub_queue)) {
         process_t *p = queue_peek(&sub_queue);
 
-        /* Check memory and resources simultaneously */
+        // check memory & resources
         if (!memory_can_allocate(p->mem_req) || !resource_available(p)) {
-            break; /* head cannot be admitted; stop scanning */
+            break; // head cannot be admitted, stop scanning
         }
 
-        /* Admit: dequeue, allocate resources, place in correct user queue */
+        // Admit: dequeue, allocate resources, place in correct user queue 
         queue_pop(&sub_queue);
-        memory_allocate(p);
+        allocate_memory(p);
         resource_occupy(p);
 
         p->state = READY;
-        /* user_queue[0] = priority 1, [1] = priority 2, [2] = priority 3 */
+        // user_queue[0] = priority 1, [1] = priority 2, [2] = priority 3
         queue_push(&user_queue[p->init_prio - 1], p);
     }
 }
@@ -374,12 +389,12 @@ void admit_process(void) {
  * Updates *cur_running_rt when an RT process is active.
  */
 process_t *dispatch(process_t **cur_running_rt) {
-    /* Case 1: an RT process is already running - keep it */
+    // Case 1: an RT process is already running - keep
     if (*cur_running_rt != NULL) {
         return *cur_running_rt;
     }
 
-    /* Case 2: start the next RT process from the RT queue */
+    // Case 2: start the next RT process from the RT queue
     if (!queue_empty(&rt_queue)) {
         process_t *rt = queue_pop(&rt_queue);
         rt->state     = RUNNING;
@@ -387,7 +402,7 @@ process_t *dispatch(process_t **cur_running_rt) {
         return rt;
     }
 
-    /* Case 3: select from user queues (highest priority first) */
+    // Case 3: select from user queues (highest priority first)
     for (int i = 0; i < 3; i++) {
         if (!queue_empty(&user_queue[i])) {
             process_t *p = queue_pop(&user_queue[i]);
@@ -396,7 +411,7 @@ process_t *dispatch(process_t **cur_running_rt) {
         }
     }
 
-    return NULL; /* IDLE */
+    return NULL; // IDLE
 }
 
 
@@ -417,42 +432,42 @@ void run_process(process_t *p) {
  * =========================================================
  * Called after RUN and PRINT.
  *
- * - If cpu_remain == 0: terminate the process, release all resources,
+ * - If cpu_remain == 0: terminate process, release all resources,
  *   clear cur_running_rt if it was an RT process.
- * - Otherwise (user process that did not complete):
+ * - Otherwise:
  *     - Demote priority by 1 (if not already at lowest = 3).
  *     - Re-queue into the appropriate user queue.
- * - RT processes that have not completed simply remain in *cur_running_rt;
+ * - RT processes that have not completed: remain in *cur_running_rt;
  *   they will be re-selected by dispatch() on the next tick.
  */
 void post_run(process_t *p, process_t **cur_running_rt) {
     if (p == NULL) return;
 
     if (p->cpu_remain == 0) {
-        /* --- TERMINATION --- */
+        // terminate
         p->state = TERMINATED;
 
         if (p->init_prio == 0) {
-            /* RT process finished: clear running RT slot */
+            // RT process finished: clear running RT slot
             *cur_running_rt = NULL;
-            /* RT processes occupy the reserved region; no freelist action needed */
+            // RT processes occupy the reserved region; no freelist action needed
         } else {
-            /* User process: release memory and I/O resources */
+            // User process: release memory and I/O resources
             memory_free(p);
             resource_free(p);
         }
     } else {
-        /* --- NOT COMPLETE --- */
+        // not complete
         if (p->init_prio == 0) {
-            /* RT process continues: nothing to do; dispatch() will reselect it */
-            /* cur_running_rt already set; state remains RUNNING */
+            // RT process continues: nothing to do; dispatch() will reselect it
+            // cur_running_rt already set; state remains RUNNING
         } else {
-            /* User process: demote priority if possible, then re-queue */
+            // User process: demote priority if possible, then re-queue
             if (p->current_prio < 3) {
                 p->current_prio++;
             }
             p->state = READY;
-            /* user_queue index = current_prio - 1 */
+            // user_queue index = current_prio - 1
             queue_push(&user_queue[p->current_prio - 1], p);
         }
     }
@@ -500,7 +515,7 @@ int main(void) {
     }
 
     /* Initialize memory manager (YOUR implementation) */
-    memory_init();
+    memory_initialize();
 
     /* Read processes from stdin */
     process_t processes[MAX_PROCESSES];
@@ -531,14 +546,14 @@ int main(void) {
         process_count++;
     }
 
-    /*
-     * Simulation state:
-     * - cur_running_rt: holds the currently running RT job (if any). In this lab,
-     *   an RT job, once dispatched, stays as the selected RT job across ticks until
-     *   it terminates.
-     * - ready_process: the process selected to run for THIS tick only
-     *   (may be RT/user/NULL).
-     */
+    /* Simulation state:
+    * - cur_running_rt: holds the currently running RT job (if any). In this lab, an RT job,
+    *   once dispatched, stays as the selected RT job across ticks until it terminates.
+    *   (This is just a state variable kept by main; your dispatch/post_run can manage it.)
+    * - ready_process: the process selected to run for THIS tick only (may be RT/user/NULL).
+    * - Note: You are free to implement RT handling differently internally, as long as
+    *   the external behavior matches the lab requirements and the main loop order is unchanged.
+    */
     int processNo = 0;                 /* index of next process that has not arrived yet */
     process_t *cur_running_rt = NULL;  /* if an RT job is running, it persists until completion */
 
@@ -556,7 +571,10 @@ int main(void) {
         /* 2) ADMIT: move as many from submission queue to user queues as possible */
         admit_process();
 
-        /* 3) DISPATCH: pick the process to run for this tick */
+        /* 3) DISPATCH: pick the process to run for this tick
+        * dispatch() returns the process that should run in the current tick.
+        * It may also update cur_running_rt to remember a running RT job across ticks.
+        */
         process_t *ready_process = dispatch(&cur_running_rt);
 
         /* 4) RUN: execute exactly 1 tick */
